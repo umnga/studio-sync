@@ -1,53 +1,55 @@
-# Welcome to your Lovable project
+# Studio Sync
 
-## Project info
+A full-stack audio processing and music tool application with React frontend and Python backend.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Project Structure
 
-## How can I edit this code?
+```
+studio-sync/
+├── frontend/          # React/TypeScript frontend
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── ...other config files
+├── backend/           # Python backend scripts
+│   ├── scripts/
+│   │   ├── buzz_detector.py
+│   │   ├── chord_converter.py
+│   │   └── tuner.py
+│   └── requirements.txt
+└── README.md
+```
 
-There are several ways of editing your application.
+## Getting Started
 
-**Use Lovable**
+### Frontend Setup
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+cd frontend
+npm install  # or bun install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The frontend will be available at `http://localhost:5173`
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Backend Setup
 
-**Use GitHub Codespaces**
+```bash
+cd backend
+pip install -r requirements.txt
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
+Then run individual Python scripts as needed for your use case.
+
+## Features
+
+- **Audio Splitter** - Split and process audio files
+- **Practice Tools** - Tools for musicians including:
+  - Buzz Detector - Detect buzzing in audio
+  - Chord Converter - Convert between chord notations
+  - Tuner - Detect and tune to precise frequencies
+- **Audio Visualization** - Visual waveform display
 - Edit files directly within the Codespace and commit and push your changes once you're done.
 
 ## What technologies are used for this project?
