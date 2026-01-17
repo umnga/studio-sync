@@ -17,6 +17,15 @@ export default {
         sans: ['Inter', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
       },
+      fontWeight: {
+        300: '300',
+        400: '400',
+        500: '500',
+        600: '600',
+        700: '700',
+        800: '800',
+        900: '900',
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

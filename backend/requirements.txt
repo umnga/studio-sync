@@ -1,5 +1,14 @@
-# Backend dependencies
-# Add your Python packages here
-# Example:
-# numpy==1.24.0
-# scipy==1.10.0
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+pydantic==2.5.0
+librosa==0.10.0
+numpy==1.26.0
+scipy==1.11.4
+demucs==4.0.0
+soundfile==0.12.1
+pydub==0.25.1
+essentia==2.1b6.dev1389
+python-dotenv==1.0.0
+cors==1.0.1
+
