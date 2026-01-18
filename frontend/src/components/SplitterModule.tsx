@@ -1,20 +1,22 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Loader2, Download, Square } from "lucide-react";
+import { Upload, Loader2, Square, Download } from "lucide-react";
 import { useAudioAnalyzer } from "../hooks/useAudioAnalyzer";
+import StemCard from "./StemCard";
 
 type ProcessingStatus = "idle" | "uploading" | "processing" | "complete" | "error";
+
+type StemData = {
+  name: string;
+  url: string;
+  duration: number;
+  rms_db: number;
+  peak_db: number;
+};
 
 type SplitterModuleProps = {
   onBack?: () => void;
 };
-
-const stems = [
-  { title: "VOCALS", color: "#FFB347", key: "vocals" },
-  { title: "DRUMS", color: "#FFB347", key: "drums" },
-  { title: "BASS", color: "#FFB347", key: "bass" },
-  { title: "OTHER", color: "#FFB347", key: "other" },
-];
 
 const API_BASE_URL = "http://localhost:8000";
 
@@ -23,66 +25,63 @@ export const SplitterModule: React.FC<SplitterModuleProps> = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [status, setStatus] = useState<ProcessingStatus>("idle");
   const [progress, setProgress] = useState(0);
-  const [stemsData, setStemsData] = useState<any>(null);
+  const [stems, setStems] = useState<StemData[]>([]);
+  const [sessionId] = useState(() => Date.now().toString());
   const { rms } = useAudioAnalyzer();
+  const workerRef = useRef<Worker | null>(null);
 
-  const handleFileUpload = useCallback(async (file: File) => {
-    if (!file.type.includes("audio")) {
-      return;
-    }
+  // Initialize Web Worker
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL("../workers/splitter.worker.ts", import.meta.url),
+      { type: "module" }
+    );
 
-    setFileName(file.name);
-    setStatus("uploading");
-    setProgress(0);
+    workerRef.current.onmessage = (event) => {
+      const { type, progress: workerProgress, result, message } = event.data;
 
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      setProgress(20);
-      const infoResponse = await fetch(`${API_BASE_URL}/api/audio-splitter/info`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!infoResponse.ok) throw new Error("Failed to get audio info");
-
-      setProgress(40);
-      setStatus("processing");
-
-      const splitFormData = new FormData();
-      splitFormData.append("file", file);
-
-      const splitResponse = await fetch(`${API_BASE_URL}/api/audio-splitter/split`, {
-        method: "POST",
-        body: splitFormData,
-      });
-
-      if (!splitResponse.ok) throw new Error("Failed to split audio");
-
-      const result = await splitResponse.json();
-
-      let currentProgress = 40;
-      const progressInterval = setInterval(() => {
-        currentProgress += Math.random() * 12;
-        if (currentProgress >= 100) {
-          currentProgress = 100;
-          clearInterval(progressInterval);
+      if (type === "PROGRESS") {
+        setProgress(workerProgress);
+        if (workerProgress === 10) {
+          setStatus("uploading");
+        } else if (workerProgress >= 30) {
+          setStatus("processing");
         }
-        setProgress(currentProgress);
-      }, 250);
+      } else if (type === "COMPLETION") {
+        setStems(result.stems || []);
+        setStatus("complete");
+        setProgress(100);
+      } else if (type === "ERROR") {
+        console.error("Worker error:", message);
+        setStatus("error");
+      }
+    };
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      clearInterval(progressInterval);
-
-      setProgress(100);
-      setStatus("complete");
-      setStemsData(result);
-    } catch (error) {
-      console.error("Error:", error);
-      setStatus("error");
-    }
+    return () => {
+      workerRef.current?.terminate();
+    };
   }, []);
+
+  const handleFileUpload = useCallback(
+    (file: File) => {
+      if (!file.type.includes("audio")) {
+        return;
+      }
+
+      setFileName(file.name);
+      setStatus("uploading");
+      setProgress(0);
+      setStems([]);
+
+      // Send to Web Worker
+      workerRef.current?.postMessage({
+        type: "START_SPLIT",
+        audioFile: file,
+        sessionId,
+      });
+    },
+    [sessionId]
+  );
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -116,7 +115,28 @@ export const SplitterModule: React.FC<SplitterModuleProps> = () => {
     setStatus("idle");
     setFileName(null);
     setProgress(0);
-    setStemsData(null);
+    setStems([]);
+  };
+
+  const handleDownloadAll = async () => {
+    if (stems.length === 0) return;
+
+    try {
+      // Download each stem
+      for (const stem of stems) {
+        const link = document.createElement("a");
+        link.href = `http://localhost:8000${stem.url}`;
+        link.setAttribute("download", `${stem.name}.wav`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // Add a small delay between downloads
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    } catch (error) {
+      console.error("Download error:", error);
+    }
   };
 
   const loadingWidth = `${Math.max(6, rms * 100 * 12)}%`;
@@ -202,60 +222,74 @@ export const SplitterModule: React.FC<SplitterModuleProps> = () => {
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             {status === "idle" && (
-              <label>
+              <label className="neon-button haptic px-6 py-3 cursor-pointer flex items-center gap-2 mx-auto">
                 <input type="file" accept="audio/*" onChange={handleInputChange} className="hidden" />
-                <button className="neon-button haptic px-6 py-3 cursor-pointer flex items-center gap-2 mx-auto">
-                  <Upload className="w-4 h-4" />
-                  LOAD CARTRIDGE
-                </button>
+                <Upload className="w-4 h-4" />
+                LOAD CARTRIDGE
               </label>
             )}
 
             {(status === "complete" || status === "error") && (
-              <button onClick={resetUpload} className="neon-button haptic px-6 py-3 flex items-center gap-2 mx-auto">
-                <Upload className="w-4 h-4" />
-                {status === "error" ? "RETRY" : "LOAD NEW"}
-              </button>
+              <>
+                <button onClick={resetUpload} className="neon-button haptic px-6 py-3 flex items-center gap-2 mx-auto">
+                  <Upload className="w-4 h-4" />
+                  {status === "error" ? "RETRY" : "LOAD NEW"}
+                </button>
+                {status === "complete" && stems.length > 0 && (
+                  <motion.button
+                    onClick={handleDownloadAll}
+                    className="neon-button haptic px-6 py-3 flex items-center gap-2 mx-auto bg-primary/10 border border-primary/40 hover:bg-primary/20"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Download className="w-4 h-4" />
+                    DOWNLOAD ALL
+                  </motion.button>
+                )}
+              </>
             )}
           </div>
         </div>
       </motion.div>
 
+      {/* Stem Cards - 3x2 Grid for 6 stems */}
       <AnimatePresence>
-        {status === "complete" && stemsData && (
+        {status === "complete" && stems.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="grid grid-cols-1 md:grid-cols-2 gap-4"
+            className="space-y-4"
           >
-            {stems.map((stem, idx) => (
-              <motion.div
-                key={stem.key}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: idx * 0.1 }}
-                className="p-4 rounded-[10px] border border-primary/20 bg-background/70 hover:bg-background/90 transition-colors group"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <span className="tech-label">{stem.title}</span>
-                  <button className="haptic w-8 h-8 rounded-[6px] border border-primary/40 bg-card/80 flex items-center justify-center text-primary hover:bg-primary/10 transition-colors opacity-0 group-hover:opacity-100">
-                    <Download className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="h-16 rounded-[6px] bg-card/60 border border-primary/15 flex items-center justify-center">
-                  <div className="flex gap-1">
-                    {Array.from({ length: 24 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className="w-1 bg-primary/40 rounded-full"
-                        style={{ height: `${20 + Math.random() * 40}%` }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
-            ))}
+            {/* Section Header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="tech-label">OUTPUT CHANNELS</p>
+                <p className="text-xs text-muted-foreground font-mono mt-1">
+                  {stems.length} STEMS • htdemucs_6s
+                </p>
+              </div>
+            </div>
+
+            {/* 3x2 Grid Layout */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {stems.map((stem, idx) => (
+                <motion.div
+                  key={stem.name}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.08 }}
+                >
+                  <StemCard
+                    name={stem.name}
+                    url={stem.url}
+                    duration={stem.duration}
+                    rmsDb={stem.rms_db}
+                    peakDb={stem.peak_db}
+                  />
+                </motion.div>
+              ))}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

@@ -1,10 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 import shutil
 import os
+import uuid
+import time
+import threading
 from typing import Dict, Optional
 import tempfile
 
@@ -12,7 +16,7 @@ import tempfile
 from scripts.buzz_detector import detect_buzz
 from scripts.tuner import detect_frequency, get_tuning_deviation
 from scripts.chord_converter import convert_chord, get_chord_variations
-from scripts.audio_splitter import split_audio, get_stem_info
+from scripts.audio_splitter import split_audio, get_stem_info, SplitterEngine
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -30,9 +34,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create temporary directory for uploads
+# Create directories for uploads and outputs
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "studio-sync-uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+OUTPUT_DIR = Path(tempfile.gettempdir()) / "studio-sync-outputs"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Mount static files for stem downloads
+app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
+
+# Initialize splitter engine (use htdemucs_6s for 6-stem separation)
+splitter_engine = SplitterEngine(model_name="htdemucs_6s", mock_mode=False)
+
+# Cleanup old sessions periodically
+def cleanup_old_outputs(max_age_hours: int = 24):
+    """Remove output directories older than max_age_hours"""
+    while True:
+        try:
+            now = time.time()
+            for session_dir in OUTPUT_DIR.iterdir():
+                if session_dir.is_dir():
+                    age_hours = (now - session_dir.stat().st_mtime) / 3600
+                    if age_hours > max_age_hours:
+                        shutil.rmtree(session_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+        time.sleep(3600)  # Run every hour
+
+# Start cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_old_outputs, daemon=True)
+cleanup_thread.start()
 
 
 # Pydantic models
@@ -185,29 +217,89 @@ async def get_variations(root: str, chord_type: str = "maj"):
 
 # ==================== AUDIO SPLITTER ENDPOINTS ====================
 
-@app.post("/api/audio-splitter/split")
-async def split_audio_endpoint(file: UploadFile = File(...)):
+@app.post("/api/split")
+async def split_audio_endpoint(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = None
+):
     """
-    Split audio into separate stems (vocals, drums, bass, other)
+    Split audio into separate stems with URLs for streaming/download
+    
+    Args:
+        file: Audio file (supports .wav, .mp3, .flac, .m4a)
+        session_id: Optional session ID (auto-generated if not provided)
     
     Returns:
-        - stems: Dictionary with paths to separated audio files
-        - output_directory: Directory containing stem files
+        - success: Boolean indicating success
+        - session_id: Unique session identifier
+        - stems: Array of stem objects, each containing:
+            - name: Stem name (vocals, drums, bass, other)
+            - url: Download/streaming URL
+            - mime_type: MIME type (audio/wav)
+            - duration: Duration in seconds
+            - rms_db: RMS level in dB (for UI meters)
+            - peak_db: Peak level in dB
         - sample_rate: Sample rate of output files
     """
     try:
-        file_path = UPLOAD_DIR / file.filename
+        # Generate session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        # Create session output directory
+        session_output_dir = OUTPUT_DIR / session_id
+        session_output_dir.mkdir(exist_ok=True)
+        
+        # Save uploaded file
+        file_path = UPLOAD_DIR / f"{session_id}_{file.filename}"
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        result = split_audio(str(file_path))
+        # Process audio with splitter engine
+        result = splitter_engine.split_audio(
+            str(file_path),
+            output_dir=str(session_output_dir)
+        )
         
-        # Don't delete original - user might want to download stems
-        # file_path.unlink()
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Processing failed"))
         
-        return result
+        # Transform response to use URLs instead of file paths
+        stems_array = []
+        for stem_name, stem_data in result["stems"].items():
+            # Convert file path to URL
+            stem_filename = Path(stem_data["path"]).name
+            stem_url = f"/outputs/{session_id}/{stem_filename}"
+            
+            stems_array.append({
+                "name": stem_name,
+                "url": stem_url,
+                "mime_type": "audio/wav",
+                "duration": stem_data["duration"],
+                "rms_db": stem_data["rms_db"],
+                "peak_db": stem_data["peak_db"]
+            })
+        
+        # Clean up uploaded file
+        file_path.unlink(missing_ok=True)
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "stems": stems_array,
+            "sample_rate": result["sample_rate"],
+            "model_used": result["model_used"]
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Legacy endpoint for backward compatibility
+@app.post("/api/audio-splitter/split")
+async def split_audio_legacy(file: UploadFile = File(...)):
+    """Legacy endpoint - redirects to /api/split"""
+    return await split_audio_endpoint(file)
 
 
 @app.post("/api/audio-splitter/info")

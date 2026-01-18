@@ -6,6 +6,7 @@ import { useAudioAnalyzer } from "../hooks/useAudioAnalyzer";
 import AudioKnob from "./AudioKnob";
 import Oscilloscope from "./Oscilloscope";
 import SplitterModule from "./SplitterModule";
+import PracticeTools from "./PracticeTools";
 
 type RackMode = "ANALYZE" | "SPLIT" | "PRACTICE";
 
@@ -220,15 +221,12 @@ const ProHero = () => {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 20 }}
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                  className="lg:col-span-3 text-center py-20"
+                  className="lg:col-span-3"
                 >
-                  <div className="inline-flex flex-col items-center gap-4 p-12 rounded-[12px] border border-primary/20 bg-background/70">
-                    <div className="w-16 h-16 rounded-full border-2 border-dashed border-primary/40 flex items-center justify-center">
-                      <span className="text-3xl">🎵</span>
-                    </div>
-                    <p className="tech-label">PRACTICE TOOLS</p>
-                    <p className="text-sm text-muted-foreground">Metronome · Tuner · Coming Soon</p>
-                  </div>
+                  <PracticeTools 
+                    stems={[]}
+                    guitarChord="C major"
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
