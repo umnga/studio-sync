@@ -3,10 +3,28 @@ Buzz Detector Script
 Detects buzzing/humming frequencies in audio using FFT analysis
 """
 
+import os
+import sys
+from contextlib import contextmanager
 import numpy as np
 import librosa
 from scipy import signal
 from typing import Dict, List, Tuple
+
+
+@contextmanager
+def suppress_c_stderr():
+    """Context manager to suppress stderr from C libraries like libmpg123"""
+    stderr_fd = sys.stderr.fileno()
+    saved_stderr = os.dup(stderr_fd)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stderr_fd)
+        os.close(devnull)
+        yield
+    finally:
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
 
 
 def detect_buzz(audio_path: str, sr: int = 22050, threshold: float = -40.0) -> Dict:
@@ -26,8 +44,9 @@ def detect_buzz(audio_path: str, sr: int = 22050, threshold: float = -40.0) -> D
         - details: Detailed analysis
     """
     try:
-        # Load audio file
-        y, sr = librosa.load(audio_path, sr=sr)
+        # Load audio file (suppress libmpg123 warnings)
+        with suppress_c_stderr():
+            y, sr = librosa.load(audio_path, sr=sr)
         
         # Compute STFT (Short-Time Fourier Transform)
         D = librosa.stft(y)

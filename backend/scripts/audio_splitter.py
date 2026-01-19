@@ -1,12 +1,66 @@
+#!/usr/bin/env python3
+"""
+Audio Splitter Module - Mac-Safe Demucs Integration
+
+Professional audio stem separation engine with proper multiprocessing guards,
+enhanced logging, and memory protection for macOS/Apple Silicon.
+"""
+
+# ============================================================================
+# CRITICAL: Environment setup MUST come before ANY other imports
+# ============================================================================
 import os
+import sys
+
+# Prevent OpenMP thread-locking on Apple Silicon
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+# ============================================================================
+# Standard library imports
+# ============================================================================
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Callable, Optional
+
+# ============================================================================
+# Configure logging
+# ============================================================================
+logger = logging.getLogger("studio-sync.splitter")
+
+@contextmanager
+def suppress_c_stderr():
+    """Context manager to suppress stderr from C libraries like libmpg123"""
+    stderr_fd = sys.stderr.fileno()
+    saved_stderr = os.dup(stderr_fd)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stderr_fd)
+        os.close(devnull)
+        yield
+    finally:
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
+
+
+# ============================================================================
+# Heavy imports (after environment setup)
+# ============================================================================
 import numpy as np
 import soundfile as sf
 import torch
 import librosa
-from demucs.pretrained import get_model
-from demucs.apply import apply_model
+
+# Demucs imports with error handling
+try:
+    from demucs.pretrained import get_model
+    from demucs.apply import apply_model
+    DEMUCS_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"Demucs not available: {e}")
+    DEMUCS_AVAILABLE = False
 
 
 class SplitterEngine:
@@ -17,23 +71,57 @@ class SplitterEngine:
         Initialize the splitter engine
         
         Args:
-            model_name: Demucs model to use (htdemucs_6s supports 6 stems including guitar & piano)
-            mock_mode: If True, simulates processing without loading models (for UI testing)
+            model_name: Demucs model to use (htdemucs_6s supports 6 stems)
+            mock_mode: If True, simulates processing without loading models
         """
         self.model_name = model_name
         self.mock_mode = mock_mode
         self.model = None
         self.device = None
         
+        if not DEMUCS_AVAILABLE:
+            logger.warning("Demucs not available, forcing mock mode")
+            self.mock_mode = True
+        
         if not mock_mode:
             self._initialize_model()
     
     def _initialize_model(self):
-        """Load and configure the demucs model"""
-        self.model = get_model(self.model_name)
-        self.model.eval()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(self.device)
+        """Load and configure the demucs model with detailed logging"""
+        logger.info(f"🔄 Initializing Demucs model: {self.model_name}")
+        logger.info("   This may take a few minutes on first run (downloading ~1GB model)...")
+        
+        try:
+            # Log before model download/load
+            logger.info("   Step 1/3: Loading model weights...")
+            self.model = get_model(self.model_name)
+            
+            logger.info("   Step 2/3: Setting model to eval mode...")
+            self.model.eval()
+            
+            # Device selection with MPS support for Apple Silicon
+            logger.info("   Step 3/3: Configuring compute device...")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+                logger.info(f"   ✅ Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                # MPS can be unstable with Demucs, use CPU for reliability
+                self.device = torch.device("cpu")
+                logger.info("   ℹ️  MPS available but using CPU for Demucs stability")
+            else:
+                self.device = torch.device("cpu")
+                logger.info("   ℹ️  Using CPU (this will be slower)")
+            
+            self.model = self.model.to(self.device)
+            
+            logger.info(f"✅ Model loaded successfully!")
+            logger.info(f"   Available stems: {self.model.sources}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load model: {e}")
+            logger.error("   Falling back to mock mode")
+            self.mock_mode = True
+            self.model = None
     
     def _enforce_stereo(self, waveform: np.ndarray) -> np.ndarray:
         """
@@ -119,43 +207,87 @@ class SplitterEngine:
             if not audio_path.exists():
                 return {"success": False, "error": f"Audio file not found: {audio_path}"}
             
+            logger.info(f"🎵 Processing: {audio_path.name}")
+            
             if progress_callback:
                 progress_callback(5)
             
             # Mock mode for UI testing
             if self.mock_mode:
+                logger.info("   Running in mock mode")
                 return self._mock_split(audio_path, progress_callback)
             
-            # Load audio with librosa (handles mp3, flac, m4a via ffmpeg)
+            # ================================================================
+            # Stage 1: Load Audio (5% -> 15%)
+            # ================================================================
+            logger.info("   Stage 1/4: Loading audio file...")
             if progress_callback:
                 progress_callback(10)
             
-            waveform, sr = librosa.load(str(audio_path), sr=44100, mono=False)
+            with suppress_c_stderr():
+                waveform, sr = librosa.load(str(audio_path), sr=44100, mono=False)
+            
+            # Calculate duration for logging
+            duration = waveform.shape[1] / sr if waveform.ndim > 1 else len(waveform) / sr
+            logger.info(f"   Audio loaded: {duration:.1f}s @ {sr}Hz")
             
             # CRITICAL: Enforce stereo for demucs
             waveform = self._enforce_stereo(waveform)
+            logger.info(f"   Shape after stereo enforcement: {waveform.shape}")
             
             if progress_callback:
-                progress_callback(20)
+                progress_callback(15)
+            
+            # ================================================================
+            # Stage 2: Prepare Tensor (15% -> 25%)
+            # ================================================================
+            logger.info("   Stage 2/4: Preparing tensor for model...")
             
             # Convert to torch tensor
             waveform_tensor = torch.from_numpy(waveform).float().to(self.device)
             waveform_tensor = waveform_tensor.unsqueeze(0)  # Add batch dimension
             
-            # Apply model with progress tracking
+            logger.info(f"   Tensor shape: {waveform_tensor.shape}, Device: {self.device}")
+            
+            if progress_callback:
+                progress_callback(25)
+            
+            # ================================================================
+            # Stage 3: Model Inference (25% -> 70%)
+            # This is the heavy computation
+            # ================================================================
+            logger.info("   Stage 3/4: Running Demucs model (this takes a while)...")
+            logger.info(f"   Processing {len(self.model.sources)} stems: {self.model.sources}")
+            
             if progress_callback:
                 progress_callback(30)
             
-            with torch.no_grad():
-                sources = apply_model(
-                    self.model, 
-                    waveform_tensor, 
-                    device=self.device, 
-                    progress=False
-                )[0]
+            try:
+                with torch.no_grad():
+                    # The apply_model function handles chunking internally
+                    sources = apply_model(
+                        self.model, 
+                        waveform_tensor, 
+                        device=self.device, 
+                        progress=True,  # Enable internal progress logging
+                        num_workers=0   # Disable multiprocessing workers on macOS
+                    )[0]
+                
+                logger.info("   Model inference complete!")
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.error(f"   ❌ Memory error: {e}")
+                    raise MemoryError(f"Out of memory processing audio. Try a shorter file. Original error: {e}")
+                raise
             
             if progress_callback:
-                progress_callback(60)
+                progress_callback(70)
+            
+            # ================================================================
+            # Stage 4: Save Stems (70% -> 100%)
+            # ================================================================
+            logger.info("   Stage 4/4: Saving separated stems...")
             
             # Setup output directory
             if output_dir is None:
@@ -167,11 +299,13 @@ class SplitterEngine:
             
             # Extract and save stems with professional naming
             stems = {}
-            stem_names = self.model.sources  # ['drums', 'bass', 'other', 'vocals']
+            stem_names = self.model.sources
             
-            progress_per_stem = 35 / len(stem_names)
+            progress_per_stem = 25 / len(stem_names)
             
             for idx, (stem_name, source) in enumerate(zip(stem_names, sources)):
+                logger.info(f"   Saving stem: {stem_name}")
+                
                 # Convert to numpy and normalize
                 stem_audio = source.cpu().numpy()
                 stem_audio = self._normalize_stem(stem_audio, ceiling_db=-1.0)
@@ -194,15 +328,17 @@ class SplitterEngine:
                 }
                 
                 if progress_callback:
-                    progress_callback(int(60 + (idx + 1) * progress_per_stem))
+                    progress_callback(int(70 + (idx + 1) * progress_per_stem))
             
-            # Clear GPU memory
+            # Clear memory
+            del sources, waveform_tensor, waveform
             if self.device.type == "cuda":
-                del sources, waveform_tensor
                 torch.cuda.empty_cache()
             
             if progress_callback:
                 progress_callback(100)
+            
+            logger.info(f"✅ Split complete! {len(stems)} stems saved to {output_dir}")
             
             return {
                 "success": True,
@@ -213,7 +349,13 @@ class SplitterEngine:
                 "input_file": str(audio_path)
             }
             
+        except MemoryError:
+            # Re-raise memory errors for proper handling upstream
+            raise
         except Exception as e:
+            logger.error(f"❌ Split failed: {e}", exc_info=True)
+            
+            # Cleanup on failure
             if self.device and self.device.type == "cuda":
                 torch.cuda.empty_cache()
             
@@ -233,6 +375,7 @@ class SplitterEngine:
         
         for idx, stem_name in enumerate(stem_names):
             time.sleep(0.3)  # Simulate processing
+            logger.info(f"   [MOCK] Processing stem: {stem_name}")
             
             # Fake metadata - adjust levels based on stem type
             rms_variation = {
@@ -301,7 +444,8 @@ def get_stem_info(audio_path: str) -> Dict:
         Dictionary with audio information
     """
     try:
-        y, sr = librosa.load(audio_path, sr=None, mono=False)
+        with suppress_c_stderr():
+            y, sr = librosa.load(audio_path, sr=None, mono=False)
         
         # Ensure proper channel detection
         channels = 2 if y.ndim > 1 and y.shape[0] == 2 else 1
@@ -316,14 +460,25 @@ def get_stem_info(audio_path: str) -> Dict:
             "format": Path(audio_path).suffix[1:].upper()
         }
     except Exception as e:
+        logger.error(f"Error getting stem info: {e}")
         return {
             "error": str(e),
             "can_split": False
         }
 
 
+# ============================================================================
+# MAIN ENTRY POINT - CRITICAL FOR MACOS MULTIPROCESSING
+# ============================================================================
 if __name__ == "__main__":
+    # This guard prevents recursive process spawning on macOS
     import sys
+    
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     if len(sys.argv) > 1:
         audio_file = sys.argv[1]
         
@@ -331,7 +486,9 @@ if __name__ == "__main__":
         def progress(pct):
             print(f"Progress: {pct}%")
         
-        # Use htdemucs_6s for 6-stem separation (vocals, drums, bass, guitar, piano, other)
+        # Use htdemucs_6s for 6-stem separation
         engine = SplitterEngine(model_name="htdemucs_6s", mock_mode=False)
         result = engine.split_audio(audio_file, progress_callback=progress)
         print(result)
+    else:
+        print("Usage: python audio_splitter.py <audio_file>")

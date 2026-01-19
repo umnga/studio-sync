@@ -3,9 +3,27 @@ Tuner Script
 Detects frequency and tuning deviation for instruments
 """
 
+import os
+import sys
+from contextlib import contextmanager
 import numpy as np
 import librosa
 from typing import Dict, Tuple
+
+
+@contextmanager
+def suppress_c_stderr():
+    """Context manager to suppress stderr from C libraries like libmpg123"""
+    stderr_fd = sys.stderr.fileno()
+    saved_stderr = os.dup(stderr_fd)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stderr_fd)
+        os.close(devnull)
+        yield
+    finally:
+        os.dup2(saved_stderr, stderr_fd)
+        os.close(saved_stderr)
 
 
 # Standard note frequencies (A4 = 440 Hz)
@@ -77,8 +95,9 @@ def detect_frequency(audio_path: str, sr: int = 22050) -> Dict:
         - confidence: Confidence of detection (0-1)
     """
     try:
-        # Load audio file
-        y, sr = librosa.load(audio_path, sr=sr)
+        # Load audio file (suppress libmpg123 warnings)
+        with suppress_c_stderr():
+            y, sr = librosa.load(audio_path, sr=sr)
         
         # Use piptrack to detect pitch
         f0 = librosa.yin(y, fmin=50, fmax=2000, sr=sr)
