@@ -5,10 +5,7 @@ import { Music2, Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
-  { name: "Home", path: "/" },
-  { name: "Audio Splitter", path: "/audio-splitter" },
-  { name: "Practice Tools", path: "/practice-tools" },
-  { name: "About", path: "/about" },
+  { name: "Splitter", path: "/" },
 ];
 
 export const Navbar = () => {

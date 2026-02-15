@@ -1,0 +1,32 @@
+{
+  "include": [
+    "backend"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "**/.venv",
+    "**/venv"
+  ],
+  "extraPaths": [
+    "backend",
+    "backend/scripts"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": false,
+  "reportGeneralTypeIssues": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportPrivateImportUsage": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownParameterType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUntypedFunctionDecorator": "none",
+  "reportUntypedClassDecorator": "none",
+  "typeCheckingMode": "off",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Darwin"
+}

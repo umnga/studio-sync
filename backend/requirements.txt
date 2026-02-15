@@ -11,4 +11,5 @@ pydub==0.25.1
 essentia==2.1b6.dev1389
 python-dotenv==1.0.0
 cors==1.0.1
+psutil==7.2.1
 

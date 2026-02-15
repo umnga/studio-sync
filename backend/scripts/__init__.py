@@ -2,21 +2,39 @@
 Scripts package for Studio Sync audio processing
 """
 
-from .buzz_detector import detect_buzz
-from .tuner import detect_frequency, get_tuning_deviation
-from .chord_converter import convert_chord, get_chord_variations
-from .chord_detector import detect_chord_from_stem, analyze_chord_progression
-from .audio_splitter import split_audio, get_stem_info, SplitterEngine
+__version__ = "1.0.0"
+__all__ = []
 
-__all__ = [
-    "detect_buzz",
-    "detect_frequency",
-    "get_tuning_deviation",
-    "convert_chord",
-    "get_chord_variations",
-    "detect_chord_from_stem",
-    "analyze_chord_progression",
-    "split_audio",
-    "get_stem_info",
-    "SplitterEngine"
-]
+# Try to import audio_splitter components
+try:
+    from .audio_splitter import split_audio, get_stem_info, SplitterEngine, compute_file_hash
+    __all__.extend(["split_audio", "get_stem_info", "SplitterEngine", "compute_file_hash"])
+except ImportError as e:
+    print(f"Warning: Could not import audio_splitter: {e}")
+    split_audio = None
+    get_stem_info = None
+    SplitterEngine = None
+    compute_file_hash = None
+
+# Try to import YouTube downloader (optional)
+try:
+    from .youtube_downloader import download_youtube_audio, YOUTUBE_DIR
+    import asyncio
+    
+    async def async_download_youtube_audio(url: str, output_dir=None):
+        """Async wrapper for YouTube download"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: download_youtube_audio(url, output_dir or YOUTUBE_DIR)
+        )
+    
+    __all__.extend(["download_youtube_audio", "YOUTUBE_DIR", "async_download_youtube_audio"])
+except ImportError:
+    # YouTube support is optional
+    download_youtube_audio = None
+    YOUTUBE_DIR = None
+    async_download_youtube_audio = None
+
+# Note: Other modules (buzz_detector, tuner, chord_converter, chord_detector) 
+# have been removed from this version

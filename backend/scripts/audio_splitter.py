@@ -1,29 +1,20 @@
 #!/usr/bin/env python3
 """
-Audio Splitter Module - Mac-Safe Demucs Integration
-
-Professional audio stem separation engine with proper multiprocessing guards,
-enhanced logging, and memory protection for macOS/Apple Silicon.
+Audio Splitter Engine - Professional stem separation with caching support
 """
-
-# ============================================================================
-# CRITICAL: Environment setup MUST come before ANY other imports
-# ============================================================================
 import os
 import sys
+import hashlib
 
 # Prevent OpenMP thread-locking on Apple Silicon
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-# ============================================================================
-# Standard library imports
-# ============================================================================
 import logging
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Callable, Optional
+from typing import Dict, List, Callable, Optional, Tuple
 
 # ============================================================================
 # Configure logging
@@ -45,6 +36,24 @@ def suppress_c_stderr():
         os.close(saved_stderr)
 
 
+def compute_file_hash(file_path: str, chunk_size: int = 8192) -> str:
+    """
+    Compute SHA256 hash of a file for cache key generation.
+    
+    Args:
+        file_path: Path to the file
+        chunk_size: Size of chunks to read
+        
+    Returns:
+        Hex digest of the file hash (first 16 chars for brevity)
+    """
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            sha256_hash.update(chunk)
+    return sha256_hash.hexdigest()[:16]
+
+
 # ============================================================================
 # Heavy imports (after environment setup)
 # ============================================================================
@@ -58,13 +67,21 @@ try:
     from demucs.pretrained import get_model
     from demucs.apply import apply_model
     DEMUCS_AVAILABLE = True
+    logger.info("✅ Demucs library loaded successfully")
 except ImportError as e:
-    logger.error(f"Demucs not available: {e}")
+    logger.error(f"❌ Demucs not available: {e}")
+    logger.error("   Install with: pip install demucs")
     DEMUCS_AVAILABLE = False
 
 
 class SplitterEngine:
     """Professional audio stem separation engine with UI integration hooks"""
+    
+    # Expected stems per model
+    MODEL_STEMS = {
+        "htdemucs": ["drums", "bass", "other", "vocals"],
+        "htdemucs_6s": ["drums", "bass", "vocals", "guitar", "piano", "other"]
+    }
     
     def __init__(self, model_name: str = "htdemucs_6s", mock_mode: bool = False):
         """
@@ -80,11 +97,13 @@ class SplitterEngine:
         self.device = None
         
         if not DEMUCS_AVAILABLE:
-            logger.warning("Demucs not available, forcing mock mode")
+            logger.warning("⚠️  Demucs not available, forcing mock mode")
             self.mock_mode = True
         
-        if not mock_mode:
+        if not mock_mode and DEMUCS_AVAILABLE:
             self._initialize_model()
+        elif not DEMUCS_AVAILABLE:
+            logger.warning("⚠️  Running in mock mode - Demucs not installed")
     
     def _initialize_model(self):
         """Load and configure the demucs model with detailed logging"""
@@ -184,19 +203,118 @@ class SplitterEngine:
             "duration": float(duration)
         }
     
+    def check_cache(self, audio_path: str, output_base_dir: str, mode: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        Check if stems for this audio file already exist in cache.
+        
+        Args:
+            audio_path: Path to the input audio file
+            output_base_dir: Base directory for outputs
+            mode: 'fast' or 'detailed'
+            
+        Returns:
+            Tuple of (cache_hit: bool, result: Dict or None)
+        """
+        try:
+            audio_path = Path(audio_path)
+            output_base = Path(output_base_dir)
+            
+            # Compute file hash
+            file_hash = compute_file_hash(str(audio_path))
+            
+            # Expected cache path: outputs/{hash}/{mode}/
+            cache_dir = output_base / file_hash / mode
+            
+            if not cache_dir.exists():
+                logger.info(f"Cache miss: {cache_dir} does not exist")
+                return False, None
+            
+            # Get expected stems for this model
+            expected_stems = self.MODEL_STEMS.get(self.model_name, [])
+            
+            # Check if all stem files exist
+            stems = {}
+            for stem_name in expected_stems:
+                # Look for matching stem file
+                matching_files = list(cache_dir.glob(f"*_{stem_name}_*.wav"))
+                if not matching_files:
+                    logger.info(f"Cache miss: {stem_name} stem not found in {cache_dir}")
+                    return False, None
+                
+                stem_path = matching_files[0]
+                
+                # Load audio to get metrics
+                try:
+                    with suppress_c_stderr():
+                        audio_data, sr = librosa.load(str(stem_path), sr=None, mono=False)
+                    
+                    if audio_data.ndim == 1:
+                        audio_data = np.stack([audio_data, audio_data])
+                    
+                    metrics = self._calculate_metrics(audio_data, sr)
+                    
+                    stems[stem_name] = {
+                        "path": str(stem_path),
+                        "rms_db": metrics["rms_db"],
+                        "peak_db": metrics["peak_db"],
+                        "duration": metrics["duration"]
+                    }
+                except Exception as e:
+                    logger.warning(f"Error reading cached stem {stem_path}: {e}")
+                    return False, None
+            
+            # All stems found - cache hit!
+            logger.info(f"✅ Cache HIT: Found {len(stems)} stems in {cache_dir}")
+            
+            return True, {
+                "success": True,
+                "stems": stems,
+                "output_directory": str(cache_dir),
+                "sample_rate": sr,
+                "model_used": self.model_name,
+                "input_file": str(audio_path),
+                "cache_hit": True,
+                "file_hash": file_hash
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking cache: {e}")
+            return False, None
+    
+    def get_cache_path(self, audio_path: str, output_base_dir: str, mode: str) -> Path:
+        """
+        Get the cache directory path for an audio file.
+        
+        Args:
+            audio_path: Path to the input audio file
+            output_base_dir: Base directory for outputs
+            mode: 'fast' or 'detailed'
+            
+        Returns:
+            Path to the cache directory
+        """
+        file_hash = compute_file_hash(str(audio_path))
+        return Path(output_base_dir) / file_hash / mode
+    
     def split_audio(
         self, 
         audio_path: str, 
         output_dir: Optional[str] = None,
-        progress_callback: Optional[Callable[[int], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        check_cache: bool = True,
+        output_base_dir: Optional[str] = None,
+        mode: str = "detailed"
     ) -> Dict:
         """
         Split audio into separate stems with UI progress hooks
         
         Args:
             audio_path: Path to audio file (supports .wav, .mp3, .flac, .m4a)
-            output_dir: Custom output directory (default: {filename}_stems)
-            progress_callback: Function to call with progress percentage (0-100)
+            output_dir: Custom output directory (default: uses cache path)
+            progress_callback: Function to call with (progress: int, stage: str)
+            check_cache: Whether to check for existing cached stems
+            output_base_dir: Base directory for cached outputs  
+            mode: 'fast' or 'detailed' for cache path
             
         Returns:
             Dictionary with stem paths, metadata, and metrics
@@ -207,10 +325,25 @@ class SplitterEngine:
             if not audio_path.exists():
                 return {"success": False, "error": f"Audio file not found: {audio_path}"}
             
-            logger.info(f"🎵 Processing: {audio_path.name}")
+            logger.info(f"Processing: {audio_path.name}")
             
-            if progress_callback:
-                progress_callback(5)
+            # Helper to call progress callback with stage info
+            def report_progress(pct: int, stage: str):
+                if progress_callback:
+                    progress_callback(pct, stage)
+            
+            report_progress(2, "Initializing...")
+            
+            # Check cache if enabled and output_base_dir provided
+            if check_cache and output_base_dir:
+                report_progress(3, "Checking cache...")
+                cache_hit, cached_result = self.check_cache(str(audio_path), output_base_dir, mode)
+                if cache_hit and cached_result:
+                    logger.info("✅ Using cached stems - skipping AI processing")
+                    report_progress(100, "Complete (cached)")
+                    return cached_result
+            
+            report_progress(5, "Loading audio file...")
             
             # Mock mode for UI testing
             if self.mock_mode:
@@ -221,8 +354,7 @@ class SplitterEngine:
             # Stage 1: Load Audio (5% -> 15%)
             # ================================================================
             logger.info("   Stage 1/4: Loading audio file...")
-            if progress_callback:
-                progress_callback(10)
+            report_progress(10, "Analyzing audio waveform...")
             
             with suppress_c_stderr():
                 waveform, sr = librosa.load(str(audio_path), sr=44100, mono=False)
@@ -235,8 +367,7 @@ class SplitterEngine:
             waveform = self._enforce_stereo(waveform)
             logger.info(f"   Shape after stereo enforcement: {waveform.shape}")
             
-            if progress_callback:
-                progress_callback(15)
+            report_progress(15, "Preparing for AI processing...")
             
             # ================================================================
             # Stage 2: Prepare Tensor (15% -> 25%)
@@ -249,8 +380,20 @@ class SplitterEngine:
             
             logger.info(f"   Tensor shape: {waveform_tensor.shape}, Device: {self.device}")
             
-            if progress_callback:
-                progress_callback(25)
+            report_progress(20, "Converting to tensor format...")
+            
+            # Determine output directory - use cache path if output_base_dir provided
+            if output_dir is None and output_base_dir:
+                file_hash = compute_file_hash(str(audio_path))
+                output_dir = Path(output_base_dir) / file_hash / mode
+            elif output_dir is None:
+                output_dir = audio_path.parent / f"{audio_path.stem}_stems"
+            else:
+                output_dir = Path(output_dir)
+            
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            report_progress(25, "Starting neural network inference...")
             
             # ================================================================
             # Stage 3: Model Inference (25% -> 70%)
@@ -259,8 +402,15 @@ class SplitterEngine:
             logger.info("   Stage 3/4: Running Demucs model (this takes a while)...")
             logger.info(f"   Processing {len(self.model.sources)} stems: {self.model.sources}")
             
-            if progress_callback:
-                progress_callback(30)
+            stem_names = list(self.model.sources)
+            num_stems = len(stem_names)
+            
+            # Create a progress callback that reports stem-by-stem progress
+            inference_start_pct = 25
+            inference_end_pct = 70
+            inference_range = inference_end_pct - inference_start_pct
+            
+            report_progress(30, f"Separating stems (0/{num_stems})...")
             
             try:
                 with torch.no_grad():
@@ -277,33 +427,25 @@ class SplitterEngine:
                 
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    logger.error(f"   ❌ Memory error: {e}")
+                    logger.error(f"   Memory error: {e}")
                     raise MemoryError(f"Out of memory processing audio. Try a shorter file. Original error: {e}")
                 raise
             
-            if progress_callback:
-                progress_callback(70)
+            report_progress(70, "Model inference complete...")
             
             # ================================================================
             # Stage 4: Save Stems (70% -> 100%)
             # ================================================================
             logger.info("   Stage 4/4: Saving separated stems...")
             
-            # Setup output directory
-            if output_dir is None:
-                output_dir = audio_path.parent / f"{audio_path.stem}_stems"
-            else:
-                output_dir = Path(output_dir)
-            
-            output_dir.mkdir(exist_ok=True)
-            
             # Extract and save stems with professional naming
             stems = {}
-            stem_names = self.model.sources
             
-            progress_per_stem = 25 / len(stem_names)
+            progress_per_stem = 25 / num_stems
             
             for idx, (stem_name, source) in enumerate(zip(stem_names, sources)):
+                stem_pct = int(70 + (idx + 1) * progress_per_stem)
+                report_progress(stem_pct, f"Saving {stem_name.capitalize()} stem...")
                 logger.info(f"   Saving stem: {stem_name}")
                 
                 # Convert to numpy and normalize
@@ -326,17 +468,16 @@ class SplitterEngine:
                     "peak_db": metrics["peak_db"],
                     "duration": metrics["duration"]
                 }
-                
-                if progress_callback:
-                    progress_callback(int(70 + (idx + 1) * progress_per_stem))
             
             # Clear memory
             del sources, waveform_tensor, waveform
-            if self.device.type == "cuda":
+            if self.device and self.device.type == "cuda":
                 torch.cuda.empty_cache()
             
-            if progress_callback:
-                progress_callback(100)
+            # Compute file hash for result
+            file_hash = compute_file_hash(str(audio_path))
+            
+            report_progress(100, "Complete!")
             
             logger.info(f"✅ Split complete! {len(stems)} stems saved to {output_dir}")
             
@@ -346,14 +487,16 @@ class SplitterEngine:
                 "output_directory": str(output_dir),
                 "sample_rate": sr,
                 "model_used": self.model_name,
-                "input_file": str(audio_path)
+                "input_file": str(audio_path),
+                "cache_hit": False,
+                "file_hash": file_hash
             }
             
         except MemoryError:
             # Re-raise memory errors for proper handling upstream
             raise
         except Exception as e:
-            logger.error(f"❌ Split failed: {e}", exc_info=True)
+            logger.error(f"Split failed: {e}", exc_info=True)
             
             # Cleanup on failure
             if self.device and self.device.type == "cuda":
@@ -365,16 +508,19 @@ class SplitterEngine:
                 "stems": {}
             }
     
-    def _mock_split(self, audio_path: Path, progress_callback: Optional[Callable[[int], None]]) -> Dict:
+    def _mock_split(self, audio_path: Path, progress_callback: Optional[Callable[[int, str], None]]) -> Dict:
         """Mock processing for UI testing without GPU - returns 6 stems"""
         import time
         
-        # htdemucs_6s model returns 6 stems
-        stem_names = ['drums', 'bass', 'vocals', 'guitar', 'piano', 'other']
+        # Get stem names for this model
+        stem_names = self.MODEL_STEMS.get(self.model_name, ['drums', 'bass', 'vocals', 'guitar', 'piano', 'other'])
         stems = {}
         
         for idx, stem_name in enumerate(stem_names):
             time.sleep(0.3)  # Simulate processing
+            pct = int(20 + (idx + 1) * (70 / len(stem_names)))
+            if progress_callback:
+                progress_callback(pct, f"Separating {stem_name.capitalize()}...")
             logger.info(f"   [MOCK] Processing stem: {stem_name}")
             
             # Fake metadata - adjust levels based on stem type
@@ -395,12 +541,9 @@ class SplitterEngine:
                 "peak_db": -3.0 + np.random.rand() * 2,
                 "duration": 180.0 + np.random.rand() * 60
             }
-            
-            if progress_callback:
-                progress_callback(int(20 + (idx + 1) * 12))
         
         if progress_callback:
-            progress_callback(100)
+            progress_callback(100, "Complete!")
         
         return {
             "success": True,
@@ -409,14 +552,16 @@ class SplitterEngine:
             "sample_rate": 44100,
             "model_used": self.model_name,
             "input_file": str(audio_path),
-            "mock_mode": True
+            "mock_mode": True,
+            "cache_hit": False,
+            "file_hash": "mock_hash"
         }
 
 
 def split_audio(
     audio_path: str, 
     model_name: str = "htdemucs_6s",
-    progress_callback: Optional[Callable[[int], None]] = None
+    progress_callback: Optional[Callable[[int, str], None]] = None
 ) -> Dict:
     """
     Legacy function wrapper for backward compatibility
@@ -424,7 +569,7 @@ def split_audio(
     Args:
         audio_path: Path to audio file
         model_name: Demucs model to use
-        progress_callback: Optional progress callback
+        progress_callback: Optional progress callback (pct, stage)
         
     Returns:
         Dictionary with paths to separated audio files and metadata
@@ -483,8 +628,8 @@ if __name__ == "__main__":
         audio_file = sys.argv[1]
         
         # Example with progress callback
-        def progress(pct):
-            print(f"Progress: {pct}%")
+        def progress(pct: int, stage: str):
+            print(f"Progress: {pct}% - {stage}")
         
         # Use htdemucs_6s for 6-stem separation
         engine = SplitterEngine(model_name="htdemucs_6s", mock_mode=False)
@@ -492,3 +637,5 @@ if __name__ == "__main__":
         print(result)
     else:
         print("Usage: python audio_splitter.py <audio_file>")
+        print("\nExample:")
+        print("  python audio_splitter.py song.mp3")
