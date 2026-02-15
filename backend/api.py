@@ -4,15 +4,24 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
 
-# CORS configuration
+app = FastAPI(
+    title="Studio Sync API",
+    version="2.0.0"
+)
+
+# CORS configuration - allow only trusted origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Your Vercel frontend URL
+    allow_origins=[
+        "https://studio-sync-two.vercel.app",  # Production frontend
+        "http://localhost:3000",              # React dev
+        "http://localhost:5173",              # Vite dev
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 @app.get("/")
