@@ -1,43 +1,24 @@
-#!/usr/bin/env python3
-"""
-Studio Sync API - Real-Time Streaming Audio Processing
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-Features:
-- Server-Sent Events (SSE) for real-time progress streaming
-- Dual-mode engine (Fast 4-stem / Detailed 6-stem)
-- System status endpoint with memory monitoring
-- Smart caching with file hash-based persistence
-"""
+app = FastAPI()
 
-# ============================================================================
-# CRITICAL: Environment setup MUST come before ANY other imports
-# ============================================================================
-import os
-import sys
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Your Vercel frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Prevent OpenMP thread-locking on Apple Silicon
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Backend is running"}
 
-# Silence low-level library logs
-os.environ['MPG123_VERBOSE'] = '0'
-os.environ['MPG123_QUIET'] = '1'
-
-# Force spawn method on macOS to prevent fork issues with PyTorch
-if sys.platform == 'darwin':
-    import multiprocessing
-    try:
-        multiprocessing.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass  # Already set
-
-# ============================================================================
-# Standard library imports
-# ============================================================================
-import json
-import uuid
-import time
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 import shutil
 import tempfile
 import threading
