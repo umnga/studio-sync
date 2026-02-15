@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Cpu, Activity, HardDrive, Zap, Layers, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://studio-sync.onrender.com";
 
 interface ServerStatus {
   online: boolean;

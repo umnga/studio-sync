@@ -30,7 +30,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       self.postMessage({ type: 'PROGRESS', progress: 10 } as WorkerResponse);
       
       // Call backend API
-      const response = await fetch('http://localhost:8000/api/split', {
+      const response = await fetch('https://studio-sync.onrender.com/api/split', {
         method: 'POST',
         body: formData,
       });

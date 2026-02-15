@@ -57,7 +57,7 @@ const STEM_COLORS: Record<string, string> = {
   other: "#6B7280",
 };
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://studio-sync.onrender.com";
 
 const AudioSplitter = () => {
   const [dragActive, setDragActive] = useState(false);

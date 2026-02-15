@@ -23,7 +23,7 @@ type SplitterModuleProps = {
   onBack?: () => void;
 };
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://studio-sync.onrender.com";
 
 export const SplitterModule: React.FC<SplitterModuleProps> = () => {
   const [dragActive, setDragActive] = useState(false);
