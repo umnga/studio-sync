@@ -1,28 +1,57 @@
 
 import sys
 import os
+import json
+import time
+import uuid
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 
+
 app = FastAPI(
     title="Studio Sync API",
-    version="2.0.0"
+    version="2.0.0",
+    description="AI-powered audio separation API"
 )
 
-# CORS configuration - allow only trusted origins
+# ========================================
+# CORS Configuration - DO NOT MODIFY ORDER
+# ========================================
+from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://studio-sync-two.vercel.app",  # Production frontend
-        "http://localhost:3000",              # React dev
-        "http://localhost:5173",              # Vite dev
+        "https://studio-sync-two.vercel.app/", # With trailing slash
+        "http://localhost:3000",                # React dev server
+        "http://localhost:5173",                # Vite dev server
+        "http://127.0.0.1:3000",               # Alternate localhost
+        "http://127.0.0.1:5173",               # Alternate localhost
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "DNT",
+        "Cache-Control",
+        "X-Requested-With",
+    ],
     expose_headers=["*"],
+    max_age=3600,
 )
+print("✅ CORS middleware configured with origins:", [
+    "https://studio-sync-two.vercel.app",
+    "https://studio-sync-two.vercel.app/",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+])
 
 @app.get("/")
 async def root():
